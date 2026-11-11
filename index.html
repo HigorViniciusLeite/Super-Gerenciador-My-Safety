@@ -1601,10 +1601,10 @@ function remove(key, id) {
 
 /* =================== ações =================== */
 function set(patch) { Object.assign(S, patch); render(); }
-function showFlash(msg, kind) {
+function showFlash(msg, kind, ms) {
   clearTimeout(flashTimer);
   S.flash = msg; S.flashKind = kind || 'ok';
-  flashTimer = setTimeout(() => set({ flash: '' }), 4000);
+  flashTimer = setTimeout(() => set({ flash: '' }), ms || 4000);
 }
 const resetSetorUI = () => ({ novoSetor: '', setorMsg: '', atvSetor: '', atvNome: '', atvDesc: '', atvMsg: '' });
 
@@ -1709,8 +1709,9 @@ function abasFieldset(u, ue) {
     '<div class="group"><h3>Geral</h3><div class="ugrid">' + TABS.filter((t) => !t.code && !t.admin).map(card).join('') + '</div></div>' +
     '<div class="group"><h3>Gestão Normativa</h3><div class="ugrid">' + TABS.filter((t) => t.code).map(card).join('') + '</div></div></fieldset>';
 }
-function saveUser() {
+async function saveUser() {
   const u = S.uform;
+  if (S.uSalvando) return;
   const err = {};
   if (!String(u.nome).trim()) err.nome = 'Selecione o empregado.';
   else if (u.empregadoId && S.usuarios.some((x) => x.id !== S.uEditId && x.empregadoId === u.empregadoId)) err.nome = 'Este empregado já é usuário do sistema.';
@@ -1722,8 +1723,21 @@ function saveUser() {
   if (u.telefone && u.telefone.replace(/\D/g, '').length < 10) err.telefone = 'Telefone incompleto.';
   if (!userEmpIds(u).length) err.empresas = 'Selecione pelo menos uma empresa sob responsabilidade deste usuário.';
   if (Array.isArray(u.abas) && !u.abas.length) err.abas = 'Marque ao menos uma aba.';
+  const novaSenha = String(u._senha || '').trim();
+  let loginNovo = null;
+  if (!u.contaId && novaSenha && loginProprio()) {
+    if (!em) err.email = 'Informe o e-mail: ele será o login da pessoa.';
+    if (novaSenha.length < 8) err.conta = 'A senha inicial precisa ter pelo menos 8 caracteres.';
+    if (!Object.keys(err).length) {
+      S.uSalvando = true;
+      const r = await criarLogin(String(u.nome).trim(), em, novaSenha);
+      S.uSalvando = false;
+      if (r.erro) err.conta = r.erro;
+      else { u.contaId = r.id; PROF[r.id] = String(u.nome).trim(); loginNovo = r.criada ? { email: em, senha: novaSenha } : { email: em, senha: '' }; }
+    }
+  }
   if (Object.keys(err).length) { set({ uErrors: err }); return; }
-  const rec = clone(u);
+  const rec = clone(u); delete rec._senha;
   rec.nome = rec.nome.trim(); rec.email = em; rec.registro = String(rec.registro || '').trim();
   if (!(funcOf(rec.funcao) || {}).reg) rec.registro = '';
   rec.empresas = userEmpIds(rec);
@@ -1732,7 +1746,9 @@ function saveUser() {
   const msg = S.uEditId ? 'Usuário atualizado.' : 'Usuário cadastrado.';
   upsert('usuarios', rec);
   Object.assign(S, { uView: 'list', uform: blankUser(), uErrors: {}, uEditId: null });
-  showFlash(msg);
+  if (loginNovo && loginNovo.senha) showFlash(msg + ' Login: ' + loginNovo.email + ' · senha inicial: ' + loginNovo.senha + ' (envie para a pessoa).', 'ok', 20000);
+  else if (loginNovo) showFlash(msg + ' Vinculado ao login já existente de ' + loginNovo.email + '.', 'ok', 8000);
+  else showFlash(msg);
   render();
 }
 
@@ -2987,6 +3003,8 @@ const ACT = {
   gDoDel: (d) => { if (!S.isOwner) return; remove('gestores', d.id); S.gConfirm = null; showFlash('Gestor excluído. O acesso dele foi removido.'); render(); },
   gContaSet: (d) => { const hit = S.gContaHits.find((x) => x.id === d.id); if (hit) { PROF[hit.id] = hit.name; if (!String(S.gForm.nome || '').trim()) S.gForm.nome = hit.name; } S.gForm.contaId = d.id; S.gContaQ = ''; S.gContaHits = []; delete S.gErr.contaId; render(); },
   gContaClear: () => { S.gForm.contaId = ''; render(); },
+  gGerarSenha: () => { S.gForm._senha = genSenha(); delete S.gErr.contaId; render(); },
+  uGerarSenha: () => { S.uform._senha = genSenha(); delete S.uErrors.conta; render(); },
   gSim: (d) => { if (!S.isOwner) return; S.simula = d.id; rescopeAll(); set({ tab: 'empresas', sub: 0, gForm: null }); window.scrollTo(0, 0); },
   gSimSair: () => { S.simula = ''; rescopeAll(); set({ tab: 'afiliados', sub: 0 }); window.scrollTo(0, 0); },
   clearV: () => set({ vMatriz: '', vFilial: '', vQ: '' }),
@@ -3752,7 +3770,9 @@ function viewUserForm() {
     F({ id: 'email', label: 'E-mail', type: 'email', inputmode: 'email', ph: 'nome@empresa.com.br' }) +
     F({ id: 'telefone', label: 'Telefone', mask: 'tel', inputmode: 'tel', ph: '(00) 00000-0000' }) +
     F({ id: 'situacao', label: 'Situação' }, [{ v: 'ativo', t: 'Ativo' }, { v: 'inativo', t: 'Inativo' }]) +
-    '<div class="field wide"><label for="u-conta">Conta de acesso vinculada</label>' + contaPicker(u) + '<span class="small">A conta Claude com que esta pessoa entra no sistema. Usada para liberar as fotos do depois nos planos de ação em que ela é a responsável pela execução.</span></div>' +
+    (loginProprio() && !u.contaId
+      ? '<div class="field wide"><label for="u-senha">Login no sistema</label>' + loginCampo('u', u, (S.uErrors || {}).conta, false) + '</div>'
+      : '<div class="field wide"><label for="u-conta">' + (loginProprio() ? 'Login no sistema' : 'Conta de acesso vinculada') + '</label>' + contaPicker(u) + '<span class="small">' + (loginProprio() ? 'É com este login que a pessoa entra no sistema. Para trocar a senha ou bloquear, use o botão com o seu nome › Contas de acesso.' : 'A conta Claude com que esta pessoa entra no sistema. Usada para liberar as fotos do depois nos planos de ação em que ela é a responsável pela execução.') + '</span></div>') +
     '</div></fieldset>';
 
   const sel = userEmpIds(u);
@@ -3845,7 +3865,7 @@ function viewPerfis() {
       '<td style="text-align:right;white-space:nowrap">' + (S.gConfirm === g.id ? confirmBox('gDoDel', g.id, 'Excluir este gestor?') : '<button class="btn btn-ghost btn-sm" data-act="gSim" data-id="' + esc(g.id) + '">Ver como</button><button class="act" aria-label="Editar ' + esc(g.nome) + '" data-act="gEdit" data-id="' + esc(g.id) + '">' + I.edit + '</button><button class="act del" aria-label="Excluir ' + esc(g.nome) + '" data-act="gAskDel" data-id="' + esc(g.id) + '">' + I.trash + '</button>') + '</td></tr>').join('') + '</tbody></table></div>';
   return h + gComo() + '</div>';
 }
-const gComo = () => '<details class="ref"><summary>Como liberar o acesso de um cliente</summary><div style="padding:0 16px 14px"><ol class="p" style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px"><li>No menu <b>Compartilhar</b> deste app, convide o e-mail da pessoa. Para ela conseguir cadastrar e salvar dados, o convite precisa ser como <b>Editor</b>; como Leitor ela só consegue consultar.</li><li>Aqui em Cadastro de Afiliados, cadastre o gestor, marque a(s) matriz(es) do cliente e, em <b>Conta de acesso</b>, busque a pessoa pelo nome e vincule a conta dela.</li><li>Use <b>Ver como</b> para conferir o que ela vai enxergar. Ao abrir o app, ela verá somente as empresas liberadas; as matrizes e filiais que ela mesma cadastrar entram automaticamente no acesso dela.</li><li>Quando o contrato acabar, informe a data de validade ou mude a situação para Inativo: o acesso é bloqueado.</li></ol></div></details>';
+const gComo = () => '<details class="ref"><summary>Como liberar o acesso de um cliente</summary><div style="padding:0 16px 14px"><ol class="p" style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px"><li>Aqui em Cadastro de Afiliados, cadastre o gestor com o <b>e-mail</b> dele, marque a(s) matriz(es) do cliente e, em <b>Login no sistema</b>, clique em <b>Gerar senha</b>.</li><li>Salve e envie à pessoa o endereço do sistema, o e-mail e a senha inicial. Ela troca a senha no botão com o nome dela.</li><li>Use <b>Ver como</b> para conferir o que ela vai enxergar. Ao abrir o app, ela verá somente as empresas liberadas; as matrizes e filiais que ela mesma cadastrar entram automaticamente no acesso dela.</li><li>Quando o contrato acabar, informe a data de validade ou mude a situação para Inativo: o acesso é bloqueado.</li></ol></div></details>';
 function viewGestorForm() {
   const g = S.gForm, er = S.gErr;
   const F = (d, options) => field(Object.assign({ kind: options ? 'select' : 'input' }, d, { domId: 'g-' + d.id, bind: 'gForm.' + d.id, value: g[d.id], error: er[d.id], options: options }));
@@ -3855,10 +3875,12 @@ function viewGestorForm() {
   h += '<fieldset><legend>Dados do gestor</legend><div class="fgrid">' +
     F({ id: 'nome', label: 'Nome completo', required: true, wide: true }) + F({ id: 'cargo', label: 'Cargo / função na empresa', ph: 'Ex.: Coordenador de SST' }) +
     F({ id: 'email', label: 'E-mail', type: 'email', inputmode: 'email', ph: 'nome@empresa.com.br' }) + F({ id: 'telefone', label: 'Telefone', mask: 'tel', inputmode: 'tel', ph: '(00) 00000-0000' }) +
-    '<div class="field wide"><label for="g-conta">Conta de acesso (Claude)<span class="req"> *</span></label><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
+    (loginProprio()
+      ? '<div class="field wide"><label for="g-senha">Login no sistema<span class="req"> *</span></label>' + (g.contaId ? '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><span class="badge g1" style="font-size:13px">' + esc(nomeConta) + '</span><button class="btn btn-ghost btn-sm" data-act="gContaClear">Desvincular</button></div><span class="small">Login criado. Para trocar a senha ou bloquear o login, use o botão com o seu nome › Contas de acesso.</span>' : loginCampo('g', g, er.contaId, true)) + '</div></div></fieldset>'
+      : '<div class="field wide"><label for="g-conta">Conta de acesso (Claude)<span class="req"> *</span></label><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
     (g.contaId ? '<span class="badge g1" style="font-size:13px">' + esc(nomeConta) + '</span><button class="btn btn-ghost btn-sm" data-act="gContaClear">Desvincular</button>' : (!USER || typeof USER.search !== 'function' ? '<span class="small">Busca de contas indisponível nesta visualização.</span>' : '<input id="g-conta" class="inp' + (er.contaId ? ' err' : '') + '" style="flex:1 1 240px" placeholder="Digite o nome da pessoa (ela precisa ter sido convidada no Compartilhar)" value="' + esc(S.gContaQ) + '" data-gconta="1" autocomplete="off">')) + '</div>' +
     (!g.contaId && S.gContaHits.length ? '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">' + S.gContaHits.map((p) => '<button class="btn btn-ghost btn-sm" data-act="gContaSet" data-id="' + esc(p.id) + '">' + esc(p.name) + (p.guest ? ' (convidado)' : '') + '</button>').join('') + '</div>' : '') +
-    (er.contaId ? '<span class="ferr">' + esc(er.contaId) + '</span>' : '<span class="small">É por esta conta que o sistema reconhece o gestor quando ele abre o app. Sem conta vinculada, ele não entra.</span>') + '</div></div></fieldset>';
+    (er.contaId ? '<span class="ferr">' + esc(er.contaId) + '</span>' : '<span class="small">É por esta conta que o sistema reconhece o gestor quando ele abre o app. Sem conta vinculada, ele não entra.</span>') + '</div></div></fieldset>');
   const mats = S.empresas.filter((e) => !isFilial(e)).sort((a, b) => estabName(a).localeCompare(estabName(b), 'pt-BR'));
   h += '<fieldset><legend>Empresas liberadas <span class="req">*</span></legend><p class="small" style="margin:0">Marque a matriz do cliente: ela e todas as suas filiais (inclusive as cadastradas depois) ficam visíveis para este gestor. Nenhuma outra empresa aparece para ele.</p>' + (er.matrizes ? '<span class="ferr" role="alert">' + esc(er.matrizes) + '</span>' : '') +
     (mats.length ? '<div class="ugrid">' + mats.map((m) => { const on = g.matrizes.indexOf(m.id) >= 0; const nf = S.empresas.filter((e) => isFilial(e) && e.matrizId === m.id).length; const outro = S.gestores.filter((x) => x.id !== g.id && x.matrizes.indexOf(m.id) >= 0).map((x) => x.nome); return '<label class="mcard' + (on ? ' on' : '') + '"><input type="checkbox" data-gmat="' + esc(m.id) + '"' + (on ? ' checked' : '') + '><span class="t"><span style="font-size:14px;font-weight:600">' + esc(estabName(m)) + '</span><span class="small">' + (m.cnpj ? esc(m.cnpj) + ' · ' : '') + (nf ? '+ ' + plural(nf, 'filial', 'filiais') : 'sem filiais') + '</span>' + (outro.length ? '<span class="small">Também liberada para: ' + esc(outro.join(', ')) + '</span>' : '') + '</span></label>'; }).join('') + '</div>' : '<div class="msg">Nenhuma matriz cadastrada. Cadastre a empresa do cliente na aba Empresas, ou deixe que o próprio gestor a cadastre depois de entrar.</div>') + '</fieldset>';
@@ -3867,24 +3889,43 @@ function viewGestorForm() {
   h += '<div class="formbar"><button class="btn btn-ghost" data-act="gBack">Cancelar</button><button class="btn btn-azul" data-act="gSave">Salvar gestor</button></div></div>';
   return h;
 }
-function saveGestor() {
-  if (!S.isOwner) return;
+async function saveGestor() {
+  if (!S.isOwner || S.gSalvando) return;
   const g = S.gForm, er = {};
   g.nome = String(g.nome || '').trim();
   if (!g.nome) er.nome = 'Informe o nome.';
-  if (!g.contaId) er.contaId = 'Vincule a conta de acesso da pessoa.';
+  const novaSenha = String(g._senha || '').trim();
+  let loginNovo = null;
+  if (!g.contaId && loginProprio()) {
+    const em0 = String(g.email || '').trim();
+    if (!em0) er.email = 'Informe o e-mail: ele será o login da pessoa.';
+    if (novaSenha.length < 8) er.contaId = 'Defina a senha inicial (mínimo 8 caracteres) ou clique em Gerar senha.';
+    const okResto = g.matrizes.length && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em0) && !(g.inicio && g.validade && g.validade < g.inicio);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em0) && em0) er.email = 'E-mail inválido.';
+    if (okResto && !er.email && !er.contaId && !er.nome) {
+      S.gSalvando = true;
+      const r = await criarLogin(g.nome, em0, novaSenha);
+      S.gSalvando = false;
+      if (r.erro) er.contaId = r.erro;
+      else { g.contaId = r.id; PROF[r.id] = g.nome; loginNovo = r.criada ? { email: em0.toLowerCase(), senha: novaSenha } : { email: em0.toLowerCase(), senha: '' }; }
+    }
+  } else if (!g.contaId) er.contaId = 'Vincule a conta de acesso da pessoa.';
   else if (S.gestores.some((x) => x.id !== g.id && x.contaId === g.contaId)) er.contaId = 'Esta conta já está vinculada a outro gestor.';
   if (!g.matrizes.length) er.matrizes = 'Marque ao menos uma matriz.';
   const em = String(g.email || '').trim(); if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) er.email = 'E-mail inválido.';
   if (g.inicio && g.validade && g.validade < g.inicio) er.validade = 'A validade é anterior ao início.';
   if (Object.keys(er).length) { set({ gErr: er }); return; }
-  const rec = normGestor(clone(g)); rec.email = em;
+  const rec = normGestor(clone(g)); rec.email = em; delete rec._senha;
   const antigo = rec.id;
   rec.id = rec.contaId; /* o documento leva o id da conta: só o próprio gestor (e o administrador) conseguem lê-lo */
   if (!rec.criadoEm) rec.criadoEm = new Date().toISOString();
   if (antigo && antigo !== rec.id) remove('gestores', antigo);
   upsert('gestores', rec);
-  set({ gForm: null, gErr: {}, gContaQ: '', gContaHits: [] }); showFlash('Gestor ' + rec.nome + ' salvo. Ele verá somente as empresas liberadas.'); window.scrollTo(0, 0);
+  set({ gForm: null, gErr: {}, gContaQ: '', gContaHits: [] });
+  if (loginNovo && loginNovo.senha) showFlash('Gestor ' + rec.nome + ' salvo. Login: ' + loginNovo.email + ' · senha inicial: ' + loginNovo.senha + ' (envie para a pessoa).', 'ok', 20000);
+  else if (loginNovo) showFlash('Gestor ' + rec.nome + ' salvo e vinculado ao login já existente de ' + loginNovo.email + '.', 'ok', 8000);
+  else showFlash('Gestor ' + rec.nome + ' salvo. Ele verá somente as empresas liberadas.');
+  window.scrollTo(0, 0);
 }
 function viewBloqueado() {
   const g = (RAW.gestores || [])[0];
@@ -12136,6 +12177,24 @@ function backfillPlanCodes() {
 /* empregado vinculado a quem está usando o sistema (Cadastro de Usuários e Responsáveis, pelo e-mail da conta) */
 const meuEmpregado = () => { if (!S.myId) return ''; const u = S.usuarios.find((x) => x.situacao !== 'inativo' && x.contaId && x.contaId === S.myId); return u ? u.empregadoId || '' : ''; };
 /* seletor da conta Claude (busca por nome na organização); guarda só o id */
+/* ---------- login no sistema (versão servidor: Netlify + Neon) ---------- */
+const loginProprio = () => !!(window.__MS_CONTAS && typeof window.__MS_CONTAS.criar === 'function');
+function genSenha() {
+  const cs = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789', a = new Uint8Array(10);
+  crypto.getRandomValues(a);
+  return Array.prototype.map.call(a, (x) => cs[x % cs.length]).join('');
+}
+/* campo "Login no sistema": senha inicial; o login é o e-mail do cadastro */
+function loginCampo(pref, f, erro, obrigatorio) {
+  return '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><input id="' + pref + '-senha" class="inp num' + (erro ? ' err' : '') + '" style="flex:1 1 200px" type="text" autocomplete="off" placeholder="Senha inicial (mínimo 8 caracteres)" value="' + esc(f._senha || '') + '" data-bind="' + (pref === 'g' ? 'gForm' : 'uform') + '._senha">' +
+    '<button class="btn btn-ghost btn-sm" data-act="' + pref + 'GerarSenha">Gerar senha</button></div>' +
+    (erro ? '<span class="ferr">' + esc(erro) + '</span>' : '<span class="small">' + (obrigatorio ? '' : 'Opcional. ') + 'O login será o <b>e-mail</b> informado acima. Copie a senha antes de salvar e envie para a pessoa junto com o endereço do sistema; ela pode trocar depois.</span>');
+}
+/* cria o login (ou reaproveita um login já existente com o mesmo e-mail) e devolve o id da conta */
+async function criarLogin(nome, email, senha) {
+  try { return await window.__MS_CONTAS.criar({ nome, email, senha }); }
+  catch (err) { return { erro: (err && err.message) || 'Não foi possível criar o login.' }; }
+}
 function contaPicker(u) {
   const nome = u.contaId ? (profName(u.contaId) || 'Conta vinculada') : '';
   let h = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">';

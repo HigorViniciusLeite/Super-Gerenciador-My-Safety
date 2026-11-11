@@ -20,9 +20,7 @@ const trocar = (re, novo, nome) => { if (re.test(html)) html = html.replace(re, 
 trocar(/<head[^>]*>/i, (m) => m + '\n<script src="/ms-cloud.js"></script>', 'tag <head>');
 /* 2. links de votação e de crachá passam a usar o endereço do próprio site */
 trocar(/const URNA_BASE_PADRAO = '[^']*';/, "const URNA_BASE_PADRAO = location.origin + '/';", 'URNA_BASE_PADRAO');
-/* 3. textos que citavam o compartilhamento do claude.ai */
-trocar(/Digite o nome da pessoa \(ela precisa ter sido convidada no Compartilhar\)/g, 'Digite o nome ou e-mail da conta (criada em Contas de acesso)', 'placeholder do afiliado');
-trocar(/No menu <b>Compartilhar<\/b> deste app, convide o e-mail da pessoa\.[^<]*<b>Editor<\/b>;[^<]*<\/li>/, 'No botão com o seu nome (canto inferior direito), abra <b>Contas de acesso</b> e crie o login da pessoa (nome, e-mail e senha inicial).</li>', 'texto "Como liberar o acesso"');
+/* 3. rótulo da versão */
 
 trocar(/ · Local \(este computador\)/g, ' · Servidor', 'rótulo de versão');
 writeFileSync(join(dist, 'index.html'), html);

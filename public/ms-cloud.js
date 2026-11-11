@@ -412,10 +412,29 @@
     carregar();
   }
 
+  /* ---------- criação de login a partir dos cadastros do app (Afiliados e Usuários) ---------- */
+  var contasApi = {
+    criar: function (d) {
+      var email = String(d.email || '').trim().toLowerCase();
+      return api('POST', '/api/contas', { nome: d.nome, email: email, senha: d.senha }).then(function (r) {
+        perfisCache[r.conta.id] = r.conta.nome;
+        return { id: r.conta.id, criada: true };
+      }, function (e) {
+        if (e.code !== 'email_existe') throw e;
+        return api('GET', '/api/busca?q=' + encodeURIComponent(email)).then(function (r) {
+          var c = (r.contas || []).filter(function (x) { return String(x.email).toLowerCase() === email; })[0];
+          if (!c) throw new Error('Já existe um login com este e-mail, criado por outra pessoa. Use outro e-mail ou peça ao administrador.');
+          return { id: c.id, criada: false };
+        });
+      });
+    }
+  };
+
   /* ---------- início ---------- */
   var votacao = /(?:^|[#&?])votar=/.test(String(location.hash || '') + String(location.search || ''));
   api('GET', '/api/me').then(function (r) {
     EU = r.conta; podeGerir = !!r.podeGerirContas;
+    if (podeGerir) window.__MS_CONTAS = contasApi;
     menuConta();
     return carregarTudo().then(function () {
       pronto = true; filaPronto.splice(0).forEach(function (f) { f(); });
