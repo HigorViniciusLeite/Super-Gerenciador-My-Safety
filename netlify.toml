@@ -2,6 +2,9 @@
   command = "node scripts/build.mjs"
   publish = "dist"
 
+[build.environment]
+  NODE_VERSION = "20"
+
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
